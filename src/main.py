@@ -1,16 +1,22 @@
 import flet as ft
-from ui.components import Download_Section,Current_Selection
+from ui.components import DownloadSection,CurrentSelection,DownloadQueue
+from models.downloader import RobustDownloader
+
 
 def main(page: ft.Page):
     page.title = "Youtube_downlaoder"
-    down_section = Download_Section()
-    curr_selection = Current_Selection()
+    downloder = RobustDownloader(3)
+    dwn = DownloadQueue(downloader=downloder,save_path="downloads")
+    down_section = DownloadSection(dwn.add_video)
+    curr_selection = CurrentSelection()
     down_section.subscribe(curr_selection)
 
     page.add(
        down_section,
-       curr_selection
+       dwn,
+       curr_selection,
+       
     )
 
-
-ft.app(main)
+if __name__ == "__main__":
+    ft.app(main)

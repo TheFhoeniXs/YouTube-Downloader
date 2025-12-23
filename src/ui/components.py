@@ -1,22 +1,26 @@
+from datetime import datetime
 import flet as ft
+from flet.core.gradients import Gradient
 from .style import AppColors
 from models.validators import is_youtube_link_checker, get_video_info
 from models.video_info import VideoInfo
 from abc import ABC, abstractmethod
+from models.downloader import RobustDownloader
+from typing import Callable
 
 class VideoQuearySelection(ABC):
     @abstractmethod
-    def on_video_info(self,info: VideoInfo):
+    def on_video_info(self,info: VideoInfo, **kwargs):
         pass
 
 
-class Download_Section(ft.Container):
-    def __init__(self):
+class DownloadSection(ft.Container):
+    def __init__(self,add_task:Callable):
         super().__init__(bgcolor=AppColors.SURFACE_DARK,border_radius=16,border=ft.border.all(1, "white10"),padding=32)
         self._observers: list[VideoQuearySelection] = []
-
         self.current_video_info: VideoInfo
-        self.download_btn_is_active =False
+        self.download_btn_is_active = False
+        self.add_task = add_task
 
         self.url_input = ft.TextField(
                 hint_text="https://www.youtube.com/watch?v=...",
@@ -59,7 +63,7 @@ class Download_Section(ft.Container):
                 blur_radius=20,
                 color=f"{AppColors.PRIMARY}4D",
             ),
-            on_click=lambda _: print("Download clicked")
+            on_click=self._on_button_click
         )
 
         self.content = ft.Column(
@@ -193,10 +197,13 @@ class Download_Section(ft.Container):
     def _notify(self,info:VideoInfo):
         for obs in self._observers:
             obs.on_video_info(info)
+    
+    def _on_button_click(self,e):
+        if self.page:
+            self.page.run_task(self.add_task,self.current_video_info,self.format_dropdown.value[:-1]) # type: ignore
+            
 
-
-
-class Current_Selection(ft.Container,VideoQuearySelection):
+class CurrentSelection(ft.Container,VideoQuearySelection):
     def __init__(self):
         super().__init__()
 
@@ -321,12 +328,150 @@ class Current_Selection(ft.Container,VideoQuearySelection):
             spacing=0
         )
 
-
-    def on_video_info(self, info: VideoInfo):
+    def on_video_info(self, info: VideoInfo, **kwargs):
         self.channel_name.value = info.channel
         self.video_title.value = info.short_title
         self.video_times.value = info.duration_formatted
         self.video_thumbnail_url.src = info.thumbnail_url
         self.update()
+
+class DownloadQueue(ft.Container):
+    def __init__(self,downloader: RobustDownloader,save_path:str = "downloads"):
+       super().__init__()
+       self.downloader = downloader
+       self.save_path = save_path
+       self.queue_column = ft.Column([])
+       self.tasks = {}
+       self.task_counter = 0
+       self.content = ft.Column(
+           spacing=12,
+           controls=[
+               ft.Row(
+                    controls=[
+                        ft.Text("DOWNLOAD QUEUE", size=10, weight=ft.FontWeight.BOLD, color="white40"),
+                        ft.Container(expand=True),
+                        ft.TextButton(
+                            "CLEAR ALL",
+                            style=ft.ButtonStyle(
+                                color=AppColors.PRIMARY,
+                                padding=0
+                            )
+                        )
+                    ]
+                ),
+                ft.Container(height=16),
+                self.queue_column
+           ]
+       )
+
+    async def add_video(self,info:VideoInfo,res:str):
+        self.task_counter += 1
+        video_ids = f"video_{self.task_counter}_{int(datetime.now().timestamp())}"
+
+        task = VideoTask(video_id=video_ids,downloader=self.downloader,video_info=info,save_path=self.save_path,resolution=res,queue_ref=self) # type: ignore
+
+        self.tasks[video_ids] = task
+        self.queue_column.controls.append(task)
+        self.update()
+
+    def remove_task(self, video_id):
+        if video_id in self.tasks:
+            task = self.tasks[video_id]
+            self.queue_column.controls.remove(task)
+            del self.tasks[video_id]
+            self.update()
+        
+class VideoTask(ft.Container):
+    def __init__(self,video_id:None,downloader:RobustDownloader,video_info:VideoInfo,save_path:str,resolution:str,queue_ref:None):
+        super().__init__(bgcolor=AppColors.SURFACE_DARK,border_radius=12,border=ft.border.all(1, "white10"),padding=12)
+
+        self.downloader = downloader
+        self.video_info = video_info
+        self.video_id = video_id   
+        self.save_path = save_path
+        self.resolutions = resolution
+        self.queue_ref = queue_ref
+
+        self.video_tite = ft.Text(value=self.video_info.short_title, size=11, weight=ft.FontWeight.BOLD, color="white", expand=True)
+        self.pb_percent = ft.Text("00%", size=11, weight=ft.FontWeight.BOLD, color=AppColors.PRIMARY)
+        self.pb = ft.ProgressBar(value=0.05,height=4,border_radius=2,color=AppColors.PRIMARY)
+        self.button = ft.IconButton(icon=ft.Icons.PAUSE,icon_color="white70",icon_size=18,bgcolor=AppColors.SURFACE_ACCENT,width=32,height=32,on_click= self.start_download)
+        self.button_rm = ft.IconButton(icon=ft.Icons.REMOVE,icon_color="white70",icon_size=18,bgcolor=AppColors.SURFACE_ACCENT,width=32,height=32,on_click= self.cancel_download)
+
+
+        self.content =ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=40,
+                                height=40,
+                                border_radius=8,
+                                bgcolor="#000000",
+                                border=ft.border.all(1, "white10"),
+                                content=ft.Image(
+                                    src=self.video_info.thumbnail_url,
+                                    fit=ft.ImageFit.COVER
+                                )
+                            ),
+                            ft.Column(
+                                controls=[
+                                    ft.Row(
+                                        controls=[
+                                            self.video_tite,
+                                            self.pb_percent
+                                        ]
+                                    ),
+                                    self.pb,
+                                    ft.Row(
+                                        controls=[
+                                            ft.Text("4.2 MB/s", size=9, weight=ft.FontWeight.W_500, color="white40"),
+                                            ft.Container(expand=True),
+                                            ft.Text("2 mins left", size=9, weight=ft.FontWeight.W_500, color=f"{AppColors.PRIMARY}CC")
+                                        ]
+                                    )
+                                ],
+                                spacing=6,
+                                expand=True
+                            ),
+                            self.button,
+                            self.button_rm
+                        ],
+                        spacing=12
+                    )
+    
+
+    async def start_download(self,e):
+        print(self.video_info.title +"  indiriliyor")
+        self.update()
+
+        try:
+            result = await  self.downloader.download(video_id=self.video_id,url=self.video_info.url,save_path=self.save_path,resolution=self.resolutions)
+
+            if result == "Success":
+                self.video_tite.value = "Oldu"
+                self.pb.value = 1
+                self.pb_percent.value = "100%"
+                self.update()
+            
+            elif result == "Cancelled":
+                self.video_tite.value = "Cancell"
+                self.update()
+            else:
+                self.video_tite.value = "HATAAAAAAAAAAAAAA"
+                self.update()
+
+        except Exception as e:
+            print(self.video_info.title+": "+str(e))
+
+        finally:
+            self.update()
+    
+
+    async def cancel_download(self,e):
+        self.downloader.cancel(self.video_id)
+        self.video_tite.value = "İPTAL EDİLDİM"
+        self.update()
+    
+    async def remove_from_queue(self, e):
+        self.queue_ref.remove_task(self.video_id) # type: ignore
 
         
