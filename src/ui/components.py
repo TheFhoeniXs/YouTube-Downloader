@@ -1,12 +1,12 @@
 from datetime import datetime
 import flet as ft
-from flet.core.gradients import Gradient
 from .style import AppColors
 from models.validators import is_youtube_link_checker, get_video_info
 from models.video_info import VideoInfo
 from abc import ABC, abstractmethod
 from models.downloader import RobustDownloader
 from typing import Callable
+
 
 class VideoQuearySelection(ABC):
     @abstractmethod
@@ -382,8 +382,13 @@ class DownloadQueue(ft.Container):
             self.update()
         
 class VideoTask(ft.Container):
-    def __init__(self,video_id:None,downloader:RobustDownloader,video_info:VideoInfo,save_path:str,resolution:str,queue_ref:None):
-        super().__init__(bgcolor=AppColors.SURFACE_DARK,border_radius=12,border=ft.border.all(1, "white10"),padding=12)
+    def __init__(self, video_id, downloader:RobustDownloader, video_info:VideoInfo, save_path:str, resolution:str, queue_ref):
+        super().__init__(
+            bgcolor="#1A1D24",  # AppColors.SURFACE_DARK
+            border_radius=12,
+            border=ft.border.all(1, "white10"),
+            padding=12
+        )
 
         self.downloader = downloader
         self.video_info = video_info
@@ -391,87 +396,243 @@ class VideoTask(ft.Container):
         self.save_path = save_path
         self.resolutions = resolution
         self.queue_ref = queue_ref
+        self.status = "waiting"  # waiting, downloading, completed, cancelled, error
 
-        self.video_tite = ft.Text(value=self.video_info.short_title, size=11, weight=ft.FontWeight.BOLD, color="white", expand=True)
-        self.pb_percent = ft.Text("00%", size=11, weight=ft.FontWeight.BOLD, color=AppColors.PRIMARY)
-        self.pb = ft.ProgressBar(value=0.05,height=4,border_radius=2,color=AppColors.PRIMARY)
-        self.button = ft.IconButton(icon=ft.Icons.PAUSE,icon_color="white70",icon_size=18,bgcolor=AppColors.SURFACE_ACCENT,width=32,height=32,on_click= self.start_download)
-        self.button_rm = ft.IconButton(icon=ft.Icons.REMOVE,icon_color="white70",icon_size=18,bgcolor=AppColors.SURFACE_ACCENT,width=32,height=32,on_click= self.cancel_download)
+        # UI Components
+        self.video_title = ft.Text(
+            value=self.video_info.short_title, 
+            size=11, 
+            weight=ft.FontWeight.BOLD, 
+            color="white", 
+            expand=True
+        )
+        self.pb_percent = ft.Text(
+            "0%", 
+            size=11, 
+            weight=ft.FontWeight.BOLD, 
+            color="#FF6A00"
+        )
+        self.pb = ft.ProgressBar(
+            value=0, 
+            height=4, 
+            border_radius=2, 
+            color="#FF6A00"
+        )
+        self.download_speed = ft.Text(
+            "0.0 MB/s", 
+            size=9, 
+            weight=ft.FontWeight.W_500, 
+            color="white40"
+        )
+        self.left_time = ft.Text(
+            "-- mins left", 
+            size=9, 
+            weight=ft.FontWeight.W_500, 
+            color="#FF6A00CC"
+        )
+        self.button = ft.IconButton(
+            icon=ft.Icons.PLAY_ARROW,
+            icon_color="white70",
+            icon_size=18,
+            bgcolor="#242830",
+            width=32,
+            height=32,
+            on_click=self.start_download
+        )
+        self.button_cancel = ft.IconButton(
+            icon=ft.Icons.CLOSE,
+            icon_color="white70",
+            icon_size=18,
+            bgcolor="#242830",
+            width=32,
+            height=32,
+            visible=False,
+            on_click=self.cancel_download
+        )
+        # self.button_rm = ft.IconButton(
+        #     icon=ft.Icons.DELETE_OUTLINE,
+        #     icon_color="white70",
+        #     icon_size=18,
+        #     bgcolor="#242830",
+        #     width=32,
+        #     height=32,
+        #     on_click=self.remove_from_queue
+        # )
 
-
-        self.content =ft.Row(
-                        controls=[
-                            ft.Container(
-                                width=40,
-                                height=40,
-                                border_radius=8,
-                                bgcolor="#000000",
-                                border=ft.border.all(1, "white10"),
-                                content=ft.Image(
-                                    src=self.video_info.thumbnail_url,
-                                    fit=ft.ImageFit.COVER
-                                )
-                            ),
-                            ft.Column(
-                                controls=[
-                                    ft.Row(
-                                        controls=[
-                                            self.video_tite,
-                                            self.pb_percent
-                                        ]
-                                    ),
-                                    self.pb,
-                                    ft.Row(
-                                        controls=[
-                                            ft.Text("4.2 MB/s", size=9, weight=ft.FontWeight.W_500, color="white40"),
-                                            ft.Container(expand=True),
-                                            ft.Text("2 mins left", size=9, weight=ft.FontWeight.W_500, color=f"{AppColors.PRIMARY}CC")
-                                        ]
-                                    )
-                                ],
-                                spacing=6,
-                                expand=True
-                            ),
-                            self.button,
-                            self.button_rm
-                        ],
-                        spacing=12
+        self.content = ft.Row(
+            controls=[
+                ft.Container(
+                    width=40,
+                    height=40,
+                    border_radius=8,
+                    bgcolor="#000000",
+                    border=ft.border.all(1, "white10"),
+                    content=ft.Image(
+                        src=self.video_info.thumbnail_url,
+                        fit=ft.ImageFit.COVER
                     )
-    
+                ),
+                ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                self.video_title,
+                                self.pb_percent
+                            ]
+                        ),
+                        self.pb,
+                        ft.Row(
+                            controls=[
+                                self.download_speed,
+                                ft.Container(expand=True),
+                                self.left_time
+                            ]
+                        )
+                    ],
+                    spacing=6,
+                    expand=True
+                ),
+                self.button,
+                self.button_cancel,
+                #self.button_rm
+            ],
+            spacing=12
+        )
 
-    async def start_download(self,e):
-        print(self.video_info.title +"  indiriliyor")
+    async def start_download(self, e):
+        if self.status == "downloading":
+            return
+        
+        print(f"🎬 {self.video_info.title} indiriliyor...")
+        
+        # UI'ı indirme moduna geçir
+        self.status = "downloading"
+        self.button.visible = False
+        self.button_cancel.visible = True
+        self.pb.value = 0
+        self.pb_percent.value = "0%"
+        self.video_title.value = self.video_info.short_title
         self.update()
 
         try:
-            result = await  self.downloader.download(video_id=self.video_id,url=self.video_info.url,save_path=self.save_path,resolution=self.resolutions)
+            result = await self.downloader.download(
+                video_id=self.video_id,
+                url=self.video_info.url,
+                save_path=self.save_path,
+                resolution=self.resolutions,
+                progress_callback=self.progress_callback
+            )
 
             if result == "Success":
-                self.video_tite.value = "Oldu"
+                self.status = "completed"
+                self.video_title.value = f"✓ {self.video_info.short_title}"
+                self.video_title.color = "#10B981"
                 self.pb.value = 1
+                self.pb.color = "#10B981"
                 self.pb_percent.value = "100%"
-                self.update()
+                self.pb_percent.color = "#10B981"
+                self.download_speed.value = "Completed"
+                self.left_time.value = "Done!"
+                self.left_time.color = "#10B981"
+                self.button_cancel.visible = False
+                print(f"✅ {self.video_info.title} tamamlandı!")
             
             elif result == "Cancelled":
-                self.video_tite.value = "Cancell"
-                self.update()
+                self.status = "cancelled"
+                self.video_title.value = f"✗ {self.video_info.short_title}"
+                self.video_title.color = "#F59E0B"
+                self.download_speed.value = "Cancelled"
+                self.left_time.value = ""
+                self.button.visible = True
+                self.button_cancel.visible = False
+                print(f"⚠️ {self.video_info.title} iptal edildi")
+            
             else:
-                self.video_tite.value = "HATAAAAAAAAAAAAAA"
-                self.update()
+                self.status = "error"
+                self.video_title.value = f"✗ {self.video_info.short_title}"
+                self.video_title.color = "#EF4444"
+                self.download_speed.value = f"Error: {result[:20]}"
+                self.left_time.value = ""
+                self.button.visible = True
+                self.button_cancel.visible = False
+                print(f"❌ {self.video_info.title} hata: {result}")
 
-        except Exception as e:
-            print(self.video_info.title+": "+str(e))
+        except Exception as ex:
+            self.status = "error"
+            self.video_title.value = f"✗ {self.video_info.short_title}"
+            self.video_title.color = "#EF4444"
+            self.download_speed.value = f"Exception: {str(ex)[:20]}"
+            self.button.visible = True
+            self.button_cancel.visible = False
+            print(f"❌ Exception: {self.video_info.title}: {str(ex)}")
 
         finally:
             self.update()
-    
 
-    async def cancel_download(self,e):
-        self.downloader.cancel(self.video_id)
-        self.video_tite.value = "İPTAL EDİLDİM"
+    async def cancel_download(self, e):
+        # Hemen UI'ı güncelle
+        self.status = "cancelling"
+        self.video_title.value = f"⏸ {self.video_info.short_title}"
+        self.video_title.color = "#F59E0B"
+        self.button_cancel.disabled = True
+        self.download_speed.value = "Cancelling..."
         self.update()
-    
-    async def remove_from_queue(self, e):
-        self.queue_ref.remove_task(self.video_id) # type: ignore
-
         
+        # Arka planda iptal et
+        try:
+            await self.downloader.cancel(self.video_id)
+        except Exception as ex:
+            print(f"Cancel error: {ex}")
+        
+        # İptal tamamlandı
+        self.status = "cancelled"
+        self.button_cancel.visible = False
+        self.button.visible = True
+        self.button.icon = ft.Icons.REFRESH
+        self.update()
+        print(f"🛑 {self.video_info.title} iptal edildi")
+
+    async def remove_from_queue(self, e):
+        if self.status == "downloading":
+            await self.cancel_download(e)
+        self.queue_ref.remove_task(self.video_id)
+
+    def progress_callback(self, data):
+        """
+        CRITICAL FIX: self.page yerine try-except kullan
+        Thread-safe güncelleme garantisi
+        """
+        try:
+            # İndirme aktif değilse güncelleme yapma
+            if self.status not in ["downloading", "cancelling"]:
+                return
+            
+            percentage = data.get('percentage', 0)
+            speed = data.get('speed', 0) / 1024 / 1024  # Bytes to MB
+            eta = data.get('eta', 0)
+
+            # Progress bar güncelle
+            self.pb.value = min(percentage / 100.0, 1.0)
+            self.pb_percent.value = f"{int(percentage)}%"
+
+            # Hız göster
+            if speed > 0:
+                self.download_speed.value = f"{speed:.2f} MB/s"
+            
+            # Kalan süre
+            if eta > 0:
+                minutes, seconds = divmod(int(eta), 60)
+                if minutes > 0:
+                    self.left_time.value = f"{minutes}m {seconds}s left"
+                else:
+                    self.left_time.value = f"{seconds}s left"
+
+            # CRITICAL: page kontrolü YOK, direkt update()
+            # Flet async event loop içinde olduğumuz için güvenli
+            self.update()
+            
+        except Exception as e:
+            # Hataları logla ama UI'ı bloklama
+            print(f"⚠️ Progress callback error: {e}")
+            pass
+
