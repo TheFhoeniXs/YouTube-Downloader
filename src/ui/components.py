@@ -201,18 +201,18 @@ class DownloadSection(ft.Container):
     def _on_button_click(self,e):
         if self.page:
             self.page.run_task(self.add_task,self.current_video_info,self.format_dropdown.value[:-1]) # type: ignore
-            
+ 
 
 class CurrentSelection(ft.Container,VideoQuearySelection):
     def __init__(self):
-        super().__init__()
+        super().__init__(expand=6)
 
         self.channel_name= ft.Text(value="by TheFhoeniXs",size=11,weight=ft.FontWeight.W_500,color="white40")
         self.video_title= ft.Text(value="TheFhoneniXs",size=18,weight=ft.FontWeight.BOLD,color="white")
         self.video_times= ft.Text(value="12:45", size=9, weight=ft.FontWeight.BOLD, color="black")
 
         self.video_thumbnail_url = ft.Image(src=f"assets/icon.png",fit=ft.ImageFit.COVER,border_radius=12,opacity=0.8)
-        self.select_quality = ft.Text("4K HDR", size=9, weight=ft.FontWeight.BOLD, color=AppColors.PRIMARY)
+        self.max_quality = ft.Text("4K HDR", size=9, weight=ft.FontWeight.BOLD, color=AppColors.PRIMARY)
 
         self.content = ft.Column(
             controls=[
@@ -240,7 +240,7 @@ class CurrentSelection(ft.Container,VideoQuearySelection):
                                             padding=ft.padding.symmetric(horizontal=6, vertical=2),
                                             bottom=8,
                                             right=8,
-                                            content=self.video_times,
+                                            content=self.video_times
                                         )
                                     ]
                                 )
@@ -262,7 +262,7 @@ class CurrentSelection(ft.Container,VideoQuearySelection):
                                                 border=ft.border.all(1, f"{AppColors.PRIMARY}33"),
                                                 border_radius=4,
                                                 padding=ft.padding.symmetric(horizontal=8, vertical=2),
-                                                content=self.select_quality,
+                                                content=self.max_quality
                                             )
                                         ],
                                         spacing=8
@@ -333,36 +333,40 @@ class CurrentSelection(ft.Container,VideoQuearySelection):
         self.video_title.value = info.short_title
         self.video_times.value = info.duration_formatted
         self.video_thumbnail_url.src = info.thumbnail_url
+        self.max_quality.value = info.available_qualities[0]
         self.update()
+
 
 class DownloadQueue(ft.Container):
     def __init__(self,downloader: RobustDownloader,save_path:str = "downloads"):
-       super().__init__()
+       super().__init__(expand=5)
        self.downloader = downloader
        self.save_path = save_path
-       self.queue_column = ft.Column([])
+       self.queue_column = ft.Column(
+           expand=True,
+           spacing=10,
+           scroll=ft.ScrollMode.ALWAYS,
+           controls=[]
+       )
        self.tasks = {}
        self.task_counter = 0
        self.content = ft.Column(
-           spacing=12,
-           controls=[
-               ft.Row(
+            expand=True,
+            controls=[
+                ft.Row(
                     controls=[
                         ft.Text("DOWNLOAD QUEUE", size=10, weight=ft.FontWeight.BOLD, color="white40"),
                         ft.Container(expand=True),
-                        ft.TextButton(
-                            "CLEAR ALL",
-                            style=ft.ButtonStyle(
-                                color=AppColors.PRIMARY,
-                                padding=0
-                            )
-                        )
+                        ft.TextButton("CLEAR ALL", style=ft.ButtonStyle(color=AppColors.PRIMARY, padding=0))
                     ]
                 ),
                 ft.Container(height=16),
-                self.queue_column
-           ]
-       )
+                ft.Container(
+                    expand=True,
+                    content=self.queue_column
+                )
+            ]
+        )
 
     async def add_video(self,info:VideoInfo,res:str):
         self.task_counter += 1
@@ -380,11 +384,12 @@ class DownloadQueue(ft.Container):
             self.queue_column.controls.remove(task)
             del self.tasks[video_id]
             self.update()
+
         
 class VideoTask(ft.Container):
     def __init__(self, video_id, downloader:RobustDownloader, video_info:VideoInfo, save_path:str, resolution:str, queue_ref):
         super().__init__(
-            bgcolor="#1A1D24",  # AppColors.SURFACE_DARK
+            bgcolor="#1A1D24",  # AppColors.AppColors.SURFACE_DARK
             border_radius=12,
             border=ft.border.all(1, "white10"),
             padding=12
@@ -400,7 +405,7 @@ class VideoTask(ft.Container):
 
         # UI Components
         self.video_title = ft.Text(
-            value=self.video_info.short_title, 
+            value=f"({self.resolutions}p) "+self.video_info.short_title, 
             size=11, 
             weight=ft.FontWeight.BOLD, 
             color="white", 
@@ -574,7 +579,7 @@ class VideoTask(ft.Container):
         self.status = "cancelling"
         self.video_title.value = f"⏸ {self.video_info.short_title}"
         self.video_title.color = "#F59E0B"
-        self.button_cancel.disabled = True
+        #self.button_cancel.disabled = True
         self.download_speed.value = "Cancelling..."
         self.update()
         
@@ -635,4 +640,5 @@ class VideoTask(ft.Container):
             # Hataları logla ama UI'ı bloklama
             print(f"⚠️ Progress callback error: {e}")
             pass
+
 

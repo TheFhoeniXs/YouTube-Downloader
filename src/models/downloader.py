@@ -60,7 +60,7 @@ class RobustDownloader:
             
             ydl_opts = {
                 'format': f"bestvideo[height<={resolution}][ext=mp4]+bestaudio[ext=m4a]/best[height<={resolution}][ext=mp4]/best",
-                'outtmpl': f'{save_path}/%(title)s.%(ext)s',
+                'outtmpl': f'{save_path}/%(title)s_{resolution}p.%(ext)s',
                 'quiet': True,
                 'merge_output_format': 'mp4',
             }
