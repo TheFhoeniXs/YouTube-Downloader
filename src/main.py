@@ -3,11 +3,11 @@ from ui.components import DownloadSection,CurrentSelection,DownloadQueue
 from models.downloader import RobustDownloader
 
 def main(page: ft.Page):
-    page.title = "Youtube_downlaoder"
+    page.title = "Youtube Downlaoder"
     page.padding = 20
-    
+    file_picker  = ft.FilePicker()
     downloder = RobustDownloader(3)
-    down_queue = DownloadQueue(downloader=downloder,save_path="downloads")
+    down_queue = DownloadQueue(downloader=downloder,save_path="downloads",file_picker =file_picker)
     down_section = DownloadSection(down_queue.add_video)
     curr_selection = CurrentSelection()
     down_section.subscribe(curr_selection)
@@ -109,7 +109,7 @@ def main(page: ft.Page):
             
         ]
     )
-    
+    page.overlay.append(file_picker)
     page.add(main_content)
 
 if __name__ == "__main__":

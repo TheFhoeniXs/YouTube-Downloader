@@ -338,10 +338,11 @@ class CurrentSelection(ft.Container,VideoQuearySelection):
 
 
 class DownloadQueue(ft.Container):
-    def __init__(self,downloader: RobustDownloader,save_path:str = "downloads"):
+    def __init__(self,downloader: RobustDownloader,file_picker:ft.FilePicker,save_path:str = "downloads"):
        super().__init__(expand=5)
        self.downloader = downloader
        self.save_path = save_path
+       self.file_picker =file_picker
        self.queue_column = ft.Column(
            expand=True,
            spacing=10,
@@ -372,13 +373,13 @@ class DownloadQueue(ft.Container):
         self.task_counter += 1
         video_ids = f"video_{self.task_counter}_{int(datetime.now().timestamp())}"
 
-        task = VideoTask(video_id=video_ids,downloader=self.downloader,video_info=info,save_path=self.save_path,resolution=res,queue_ref=self) # type: ignore
+        task = VideoTask(video_id=video_ids,downloader=self.downloader,video_info=info,save_path=self.save_path,resolution=res,queue_ref=self,file_picker=self.file_picker) 
 
         self.tasks[video_ids] = task
-        self.queue_column.controls.append(task)
+        self.queue_column.controls.insert(0,task)
         self.update()
 
-    def remove_task(self, video_id):
+    async def remove_task(self, video_id):
         if video_id in self.tasks:
             task = self.tasks[video_id]
             self.queue_column.controls.remove(task)
@@ -387,12 +388,15 @@ class DownloadQueue(ft.Container):
 
         
 class VideoTask(ft.Container):
-    def __init__(self, video_id, downloader:RobustDownloader, video_info:VideoInfo, save_path:str, resolution:str, queue_ref):
+    def __init__(self, video_id, downloader:RobustDownloader, video_info:VideoInfo, save_path:str, resolution:str, queue_ref:DownloadQueue,file_picker:ft.FilePicker):
         super().__init__(
             bgcolor="#1A1D24",  # AppColors.AppColors.SURFACE_DARK
             border_radius=12,
             border=ft.border.all(1, "white10"),
-            padding=12
+            padding=12,
+            animate=ft.Animation(320, ft.AnimationCurve.EASE_OUT),
+            on_hover= self._on_hover,
+            height= 75,
         )
 
         self.downloader = downloader
@@ -401,8 +405,9 @@ class VideoTask(ft.Container):
         self.save_path = save_path
         self.resolutions = resolution
         self.queue_ref = queue_ref
+        self.file_picker =file_picker
+        self.file_picker.on_result = self._file_picker
         self.status = "waiting"  # waiting, downloading, completed, cancelled, error
-
         # UI Components
         self.video_title = ft.Text(
             value=f"({self.resolutions}p) "+self.video_info.short_title, 
@@ -454,17 +459,70 @@ class VideoTask(ft.Container):
             visible=False,
             on_click=self.cancel_download
         )
-        # self.button_rm = ft.IconButton(
-        #     icon=ft.Icons.DELETE_OUTLINE,
-        #     icon_color="white70",
-        #     icon_size=18,
-        #     bgcolor="#242830",
-        #     width=32,
-        #     height=32,
-        #     on_click=self.remove_from_queue
-        # )
+        self.button_rm = ft.IconButton(
+            icon=ft.Icons.DELETE_OUTLINE,
+            icon_color="white70",
+            icon_size=18,
+            bgcolor="#242830",
+            width=32,
+            height=32,
+            on_click=self.remove_from_queue
+        )
+        self.down_content_path = ft.Text(value=self.save_path,size=10,overflow=ft.TextOverflow.ELLIPSIS,max_lines=1)
+        
+        self.down_content = ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Row([ft.Text(value="Change Path: "),
+                            self.down_content_path]),      
+                            ft.IconButton(
+                                icon=ft.Icons.FOLDER,
+                                icon_color="white70",
+                                icon_size=18,
+                                bgcolor="#242830",
+                                width=32,
+                                height=32,
+                                on_click=self._select_folder
+                            )
+                        ],alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Text(value="Change Resolution: "),
+                            ft.RadioGroup(
+                                content=ft.Column(
+                                    controls=[
+                                        ft.Row(
+                                    controls=[ft.Radio(label=x, value=x[:-1], scale=0.9, label_style=ft.TextStyle(size=13)) 
+ for x in (self.video_info.available_qualities[:5] if len(self.video_info.available_qualities) > 5 else self.video_info.available_qualities)],
+                                    wrap=True,
+                                    run_spacing=10,
+                                    spacing=10,
+                                    expand=True
+                                         ),
+                                        ft.Row(
+                                            controls=[ft.Radio(label=x, value=x[:-1]) for x in self.video_info.available_qualities[5:]] if self.video_info.available_qualities else [],
+                                        )
+                                    ]
+                                ),value=self.resolutions, on_change=self._update_resolutions
+                            )               
 
-        self.content = ft.Row(
+                        ]
+                    )
+
+                ],spacing= 5
+            ),
+            opacity=0,
+            visible= False,
+            animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_IN_OUT),
+            #clip_behavior=ft.ClipBehavior.HARD_EDGE
+        )
+        
+        self.content = ft.Column(
+            controls=[
+                ft.Row(
             controls=[
                 ft.Container(
                     width=40,
@@ -499,9 +557,13 @@ class VideoTask(ft.Container):
                 ),
                 self.button,
                 self.button_cancel,
-                #self.button_rm
+                self.button_rm
             ],
             spacing=12
+        ),
+        self.down_content
+        
+            ]
         )
 
     async def start_download(self, e):
@@ -516,7 +578,12 @@ class VideoTask(ft.Container):
         self.button_cancel.visible = True
         self.pb.value = 0
         self.pb_percent.value = "0%"
-        self.video_title.value = self.video_info.short_title
+        self.video_title.value = f"({self.resolutions}p) "+self.video_info.short_title
+        self.video_title.color = "white"
+
+        self.height = 75
+        self.down_content.visible = False
+        self.down_content.opacity = 0
         self.update()
 
         try:
@@ -530,7 +597,7 @@ class VideoTask(ft.Container):
 
             if result == "Success":
                 self.status = "completed"
-                self.video_title.value = f"✓ {self.video_info.short_title}"
+                self.video_title.value = f"✓ {self.video_title.value}"
                 self.video_title.color = "#10B981"
                 self.pb.value = 1
                 self.pb.color = "#10B981"
@@ -540,31 +607,35 @@ class VideoTask(ft.Container):
                 self.left_time.value = "Done!"
                 self.left_time.color = "#10B981"
                 self.button_cancel.visible = False
+                self.button.visible = False
+                self.button_rm.visible = True
                 print(f"✅ {self.video_info.title} tamamlandı!")
             
             elif result == "Cancelled":
                 self.status = "cancelled"
-                self.video_title.value = f"✗ {self.video_info.short_title}"
+                self.video_title.value = f"✗ {self.video_title.value}"
                 self.video_title.color = "#F59E0B"
                 self.download_speed.value = "Cancelled"
                 self.left_time.value = ""
                 self.button.visible = True
                 self.button_cancel.visible = False
+                self.button_rm.visible = True
                 print(f"⚠️ {self.video_info.title} iptal edildi")
             
             else:
                 self.status = "error"
-                self.video_title.value = f"✗ {self.video_info.short_title}"
+                self.video_title.value = f"✗ {self.video_title.value}"
                 self.video_title.color = "#EF4444"
                 self.download_speed.value = f"Error: {result[:20]}"
                 self.left_time.value = ""
                 self.button.visible = True
                 self.button_cancel.visible = False
+                self.button_rm.visible = True
                 print(f"❌ {self.video_info.title} hata: {result}")
 
         except Exception as ex:
             self.status = "error"
-            self.video_title.value = f"✗ {self.video_info.short_title}"
+            self.video_title.value = f"✗ ({self.resolutions}p) {self.video_info.short_title}"
             self.video_title.color = "#EF4444"
             self.download_speed.value = f"Exception: {str(ex)[:20]}"
             self.button.visible = True
@@ -577,7 +648,7 @@ class VideoTask(ft.Container):
     async def cancel_download(self, e):
         # Hemen UI'ı güncelle
         self.status = "cancelling"
-        self.video_title.value = f"⏸ {self.video_info.short_title}"
+        self.video_title.value = f"⏸({self.resolutions}p) {self.video_info.short_title}"
         self.video_title.color = "#F59E0B"
         #self.button_cancel.disabled = True
         self.download_speed.value = "Cancelling..."
@@ -599,8 +670,14 @@ class VideoTask(ft.Container):
 
     async def remove_from_queue(self, e):
         if self.status == "downloading":
-            await self.cancel_download(e)
-        self.queue_ref.remove_task(self.video_id)
+            try:
+                await self.downloader.cancel(self.video_id)
+            except Exception as e:
+                print(f"errror {e}")
+                print(f"🛑 {self.video_info.title} iptal denedik bir şeyler")
+        
+        
+            await self.queue_ref.remove_task(self.video_id)
 
     def progress_callback(self, data):
         """
@@ -640,5 +717,33 @@ class VideoTask(ft.Container):
             # Hataları logla ama UI'ı bloklama
             print(f"⚠️ Progress callback error: {e}")
             pass
+    
+    def _on_hover(self,e):
+        
+        if e.data == "true" and self.status is "waiting":
+            self.height = 200
+            self.down_content.opacity = 1
+            
+            self.down_content.visible = True
+        else:
+            self.height = 75
+            self.down_content.visible = False
+            self.down_content.opacity = 0
 
+        
+        self.update()
+        
+    def _file_picker(self,e:ft.FilePickerResultEvent):
+        if e.path:
+            self.save_path = e.path
+            self.down_content_path.value = e.path
+        
+        self.update()
+    
+    def _select_folder(self,e): self.file_picker.get_directory_path()
+
+    def _update_resolutions(self,e): 
+        self.resolutions = e.control.value
+        self.video_title.value = f"({self.resolutions}p) "+self.video_info.short_title
+        self.update()
 

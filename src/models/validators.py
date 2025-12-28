@@ -54,9 +54,7 @@ async def get_video_info(url:str) -> VideoInfo:
 from typing import List
 # Standart YouTube kalite çözünürlükleri (büyükten küçüğe)
 STANDARD_RESOLUTIONS = {
-    7680: "8K",
-    3840: "4K", 
-    2560: "2K",
+    2160:"2160p",
     1440: "1440p",
     1080: "1080p",
     720: "720p",
