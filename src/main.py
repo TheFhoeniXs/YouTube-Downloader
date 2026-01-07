@@ -102,6 +102,7 @@ class StartupCheck:
 
 def main(page: ft.Page):
     page.title = "Youtube Downlaoder"
+    page.window.icon = "src/assets/icons/icon.png"
     page.padding = 20
     file_picker  = ft.FilePicker()
     downloder = RobustDownloader(3)
@@ -150,4 +151,4 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.app(main)
+    ft.app(main,assets_dir="src/assets",name="Youtube Downlaoder")
