@@ -17,45 +17,57 @@ class DynamicSemaphore:
     async def acquire(self):
         """Semaphore'u kilitle"""
         async with self._lock:
-            while self._value <= 0:
-                fut = asyncio.get_event_loop().create_future()
-                self._waiters.append(fut)
-            self._value -= 1
+            # Eğer slot varsa hemen al
+            if self._value > 0:
+                self._value -= 1
+                return
+            
+            # Slot yoksa bekle
+            fut = asyncio.get_event_loop().create_future()
+            self._waiters.append(fut)
         
-        # Waiter varsa beklet
-        if self._waiters:
-            try:
-                await self._waiters.pop(0)
-            except asyncio.CancelledError:
-                async with self._lock:
+        # Lock dışında bekle
+        try:
+            await fut
+        except asyncio.CancelledError:
+            async with self._lock:
+                # İptal edilirse slot'u geri ver
+                if not fut.done():
+                    self._waiters.remove(fut)
+                else:
+                    # Future zaten tamamlanmışsa, slot'u geri ver
                     self._value += 1
-                raise
+            raise
     
     def release(self):
         """Semaphore'u serbest bırak"""
         async def _release():
             async with self._lock:
                 self._value += 1
-                if self._waiters:
-                    fut = self._waiters[0]
+                # Bekleyen varsa uyandır
+                while self._waiters and self._value > 0:
+                    fut = self._waiters.pop(0)
                     if not fut.done():
+                        self._value -= 1
                         fut.set_result(None)
+                        break
         
         asyncio.create_task(_release())
     
     async def set_value(self, new_value):
         """Dinamik olarak maksimum değeri değiştir"""
         async with self._lock:
-            diff = new_value - self._value
+            old_value = self._value
             self._value = new_value
             
             # Eğer limit artırıldıysa, bekleyen task'ları uyandır
-            if diff > 0:
-                wake_count = min(diff, len(self._waiters))
+            if new_value > old_value:
+                wake_count = new_value - old_value
                 for _ in range(wake_count):
-                    if self._waiters:
+                    if self._waiters and self._value > 0:
                         fut = self._waiters.pop(0)
                         if not fut.done():
+                            self._value -= 1
                             fut.set_result(None)
     
     async def get_value(self):
@@ -126,7 +138,10 @@ class RobustDownloader:
             self.processes.pop(video_id, None)
 
     async def download(self, video_id, url, save_path, resolution="1080", progress_callback=None):
-        async with self.semaphore:
+        # Semaphore'u bekle
+        await self.semaphore.acquire()
+        
+        try:
             async with self._stats_lock:
                 self.active_downloads += 1
             
@@ -147,12 +162,20 @@ class RobustDownloader:
                 result = await loop.run_in_executor(self.executor, self._run_download, url, video_id, ydl_opts)
                 return result
             finally:
-                async with self._stats_lock:
-                    self.active_downloads -= 1
-                
                 if monitor_task:
                     monitor_task.cancel()
+                    try:
+                        await monitor_task
+                    except asyncio.CancelledError:
+                        pass
+                
                 self.is_cancelled.pop(video_id, None)
+        finally:
+            async with self._stats_lock:
+                self.active_downloads -= 1
+            
+            # Semaphore'u serbest bırak
+            self.semaphore.release()
 
     async def _monitor_progress(self, video_id, callback):
         try:
@@ -176,7 +199,7 @@ class RobustDownloader:
             self.processes.pop(video_id, None)
         
         await asyncio.sleep(0.3)
-        self._cleanup_temp_files()
+        #self._cleanup_temp_files()
 
     def _force_kill_recursive(self, process):
         """ffmpeg ve tüm alt süreçleri kesin olarak öldürür"""
@@ -199,20 +222,32 @@ class RobustDownloader:
                 except: 
                     pass
     
-    # ============== YENİ DİNAMİK YÖNETİM FONKSİYONLARI ==============
+    # ============== DİNAMİK YÖNETİM FONKSİYONLARI ==============
     
     async def set_max_concurrent(self, new_limit):
         """
         Maksimum eşzamanlı indirme sayısını dinamik olarak değiştirir.
-        Devam eden indirmeleri etkilemez, sadece yeni indirmeler için geçerlidir.
-        """
-        old_limit = self.max_concurrent
-        self.max_concurrent = new_limit
-        await self.semaphore.set_value(new_limit)
         
-        print(f"✅ Max concurrent: {old_limit} -> {new_limit}")
-        print(f"   Aktif indirmeler: {self.active_downloads}")
-        print(f"   Bekleyen indirmeler: {self.semaphore.get_waiting_count()}")
+        Önemli: Limit azaltılırsa, devam eden indirmeler tamamlanır
+        ama yenileri bekletilir. Artırılırsa bekleyenler hemen başlatılır.
+        """
+        async with self._stats_lock:
+            old_limit = self.max_concurrent
+            self.max_concurrent = new_limit
+            
+            # Semaphore değerini güncelle
+            current_available = await self.semaphore.get_value()
+            
+            # Yeni available slot sayısını hesapla
+            # available = new_limit - active_downloads
+            new_available = max(0, new_limit - self.active_downloads)
+            
+            await self.semaphore.set_value(new_available)
+            
+            print(f"✅ Max concurrent: {old_limit} -> {new_limit}")
+            print(f"   Aktif indirmeler: {self.active_downloads}")
+            print(f"   Mevcut slotlar: {current_available} -> {new_available}")
+            print(f"   Bekleyen indirmeler: {self.semaphore.get_waiting_count()}")
     
     async def get_stats(self):
         """Downloader istatistiklerini döndürür"""
@@ -243,4 +278,3 @@ class RobustDownloader:
     def get_waiting_count(self):
         """Bekleyen indirme sayısını döndürür"""
         return self.semaphore.get_waiting_count()
-
