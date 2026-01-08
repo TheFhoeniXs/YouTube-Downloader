@@ -1,30 +1,22 @@
 [project]
-name = "carpe-diem2"
+name = "YouTube Downloader"
 version = "0.1.0"
 description = ""
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
-    { name = "Flet developer", email = "you@example.com" }
+    { name = "TheFhoeniXs", email = "" }
 ]
 dependencies = [
-  "flet==0.28.3"
+  "flet==0.28.3",
+  "yt-dlp >=2026.1.6.233142.dev0"
 ]
 
 [tool.flet]
-# org name in reverse domain name notation, e.g. "com.mycompany".
-# Combined with project.name to build bundle ID for iOS and Android apps
-org = "com.mycompany"
-
-# project display name that is used as an app title on Android and iOS home screens,
-# shown in window titles and about app dialogs on desktop.
-product = "carpe-diem2"
-
-# company name to display in about app dialogs
-company = "Flet"
-
-# copyright text to display in about app dialogs
-copyright = "Copyright (C) 2025 by Flet"
+org = "com.thefhoenixs"
+product = "YouTube-Downloader"
+company = "TheFhoneiXs Dev"
+copyright = "Copyright (C) 2025 by TheFhoneiXs"
 
 [tool.flet.app]
 path = "src"
