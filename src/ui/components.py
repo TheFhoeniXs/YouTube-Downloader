@@ -460,7 +460,6 @@ class DownloadQueue(ft.Container):
             self.defult_vid_path.hint_text = value[:32] + "..." if len(value) > 32 else value
             self.defult_vid_path.value = None
         self.defult_vid_path.update()
-
 class VideoTask(ft.Container):
     def __init__(self, video_id, downloader, video_info, save_path:str, resolution:str, queue_ref, file_picker:ft.FilePicker):
         super().__init__(
@@ -483,8 +482,10 @@ class VideoTask(ft.Container):
         self.file_picker.on_result = self._file_picker
         self.status = "waiting"
         
-        # ✅ İptal kontrolü için flag
+        # ✅ İptal kontrolü için lock ve flag
         self._is_cancelled = False
+        self._cancel_lock = asyncio.Lock()
+        self._download_task = None
         
         # UI Components
         self.video_title = ft.Text(
@@ -649,31 +650,33 @@ class VideoTask(ft.Container):
         )
 
     async def start_download(self, e):
-        if self.status == "downloading":
-            return
-        
-        #print(f"🎬 {self.video_info.title} indiriliyor...")
-        
-        # ✅ Flag'i sıfırla - RESTART için kritik
-        self._is_cancelled = False
-        
-        # UI'ı indirme moduna geçir
-        self.status = "downloading"
-        self.button.visible = False
-        self.button_cancel.visible = True
-        self.button.icon = ft.Icons.PLAY_ARROW  # Reset icon
-        self.pb.value = 0
-        self.pb.color = "#FF6A00"
-        self.pb_percent.value = "0%"
-        self.pb_percent.color = "#FF6A00"
-        self.video_title.value = f"({self.resolutions}p) {self.video_info.short_title}"
-        self.video_title.color = "white"
-        self.download_speed.value = "0.0 MB/s"
-        self.left_time.value = "-- mins left"
-        self.height = 75
-        self.down_content.visible = False
-        self.down_content.opacity = 0
-        self.update()
+        """✅ Geliştirilmiş download başlatma"""
+        async with self._cancel_lock:
+            if self.status == "downloading":
+                return
+            
+            print(f"🎬 Download başlatılıyor: {self.video_info.title}")
+            
+            # ✅ Flag'i sıfırla - RESTART için kritik
+            self._is_cancelled = False
+            
+            # UI'ı indirme moduna geçir
+            self.status = "downloading"
+            self.button.visible = False
+            self.button_cancel.visible = True
+            self.button.icon = ft.Icons.PLAY_ARROW
+            self.pb.value = 0
+            self.pb.color = "#FF6A00"
+            self.pb_percent.value = "0%"
+            self.pb_percent.color = "#FF6A00"
+            self.video_title.value = f"({self.resolutions}p) {self.video_info.short_title}"
+            self.video_title.color = "white"
+            self.download_speed.value = "0.0 MB/s"
+            self.left_time.value = "-- mins left"
+            self.height = 75
+            self.down_content.visible = False
+            self.down_content.opacity = 0
+            self.update()
 
         try:
             result = await self.downloader.download(
@@ -684,113 +687,140 @@ class VideoTask(ft.Container):
                 progress_callback=self.progress_callback
             )
 
-            # ✅ İptal edildiyse UI güncellemesini atlat
-            if self._is_cancelled:
-                #print(f"⚠️ {self.video_info.title} - iptal edildi, sonuç işlenmiyor")
-                return
+            # ✅ İptal durumunu kontrol et
+            async with self._cancel_lock:
+                if self._is_cancelled:
+                    print(f"⚠️ Download tamamlandı ama iptal edilmişti: {self.video_info.title}")
+                    return
 
+            # ✅ Sonuçları işle
             if result == "Success":
-                self.status = "completed"
-                self.video_title.value = f"✓ {self.video_title.value}"
-                self.video_title.color = "#10B981"
-                self.pb.value = 1
-                self.pb.color = "#10B981"
-                self.pb_percent.value = "100%"
-                self.pb_percent.color = "#10B981"
-                self.download_speed.value = "Completed"
-                self.left_time.value = "Done!"
-                self.left_time.color = "#10B981"
-                self.button_cancel.visible = False
-                self.button.visible = False
-                self.button_rm.visible = True
-                #print(f"✅ {self.video_info.title} tamamlandı!")
+                async with self._cancel_lock:
+                    self.status = "completed"
+                    self.video_title.value = f"✓ {self.video_title.value}"
+                    self.video_title.color = "#10B981"
+                    self.pb.value = 1
+                    self.pb.color = "#10B981"
+                    self.pb_percent.value = "100%"
+                    self.pb_percent.color = "#10B981"
+                    self.download_speed.value = "Completed"
+                    self.left_time.value = "Done!"
+                    self.left_time.color = "#10B981"
+                    self.button_cancel.visible = False
+                    self.button.visible = False
+                    self.button_rm.visible = True
+                print(f"✅ Download tamamlandı: {self.video_info.title}")
             
             elif result == "Cancelled":
-                # Cancel_download zaten UI'ı güncelledi
-                #print(f"⚠️ {self.video_info.title} iptal edildi (downloader response)")
-                pass
+                print(f"⚠️ Downloader 'Cancelled' döndü: {self.video_info.title}")
+                # UI zaten cancel_download tarafından güncellendi
             
             else:
-                self.status = "error"
-                self.video_title.value = f"✗ {self.video_title.value}"
-                self.video_title.color = "#EF4444"
-                self.download_speed.value = f"Error: {result[:20]}"
-                self.left_time.value = ""
-                self.button.visible = True
-                self.button_cancel.visible = False
-                self.button_rm.visible = True
-                #print(f"❌ {self.video_info.title} hata: {result}")
+                async with self._cancel_lock:
+                    self.status = "error"
+                    self.video_title.value = f"✗ {self.video_title.value}"
+                    self.video_title.color = "#EF4444"
+                    self.download_speed.value = f"Error: {result[:20]}"
+                    self.left_time.value = ""
+                    self.button.visible = True
+                    self.button_cancel.visible = False
+                    self.button_rm.visible = True
+                print(f"❌ Download hatası: {self.video_info.title}: {result}")
 
         except Exception as ex:
-            if not self._is_cancelled:
-                self.status = "error"
-                self.video_title.value = f"✗ ({self.resolutions}p) {self.video_info.short_title}"
-                self.video_title.color = "#EF4444"
-                self.download_speed.value = f"Exception: {str(ex)[:20]}"
-                self.button.visible = True
-                self.button_cancel.visible = False
-                #print(f"❌ Exception: {self.video_info.title}: {str(ex)}")
+            async with self._cancel_lock:
+                if not self._is_cancelled:
+                    self.status = "error"
+                    self.video_title.value = f"✗ ({self.resolutions}p) {self.video_info.short_title}"
+                    self.video_title.color = "#EF4444"
+                    self.download_speed.value = f"Exception: {str(ex)[:20]}"
+                    self.button.visible = True
+                    self.button_cancel.visible = False
+                    print(f"❌ Exception: {self.video_info.title}: {str(ex)}")
 
         finally:
-            if not self._is_cancelled:
-                self.update()
+            async with self._cancel_lock:
+                if not self._is_cancelled:
+                    self.update()
 
     async def cancel_download(self, e):
+        """✅ Tamamen yeniden yazılmış cancel fonksiyonu"""
+        async with self._cancel_lock:
+            # 1. Durum kontrolü
+            if self._is_cancelled:
+                print(f"⚠️ Zaten iptal ediliyor: {self.video_info.title}")
+                return
+            
+            if self.status not in ["downloading", "waiting"]:
+                print(f"⚠️ İptal edilemez durum: {self.status}")
+                return
+            
+            print(f"🛑 İptal başlatılıyor: {self.video_info.title}")
+            
+            # 2. Flag'i set et (progress_callback'i durdurur)
+            self._is_cancelled = True
+            
+            # 3. UI'ı "cancelling" durumuna çek
+            self.status = "cancelling"
+            self.video_title.value = f"⏸ ({self.resolutions}p) {self.video_info.short_title}"
+            self.video_title.color = "#F59E0B"
+            self.download_speed.value = "Cancelling..."
+            self.button_cancel.disabled = True
+            self.update()
         
-        if self._is_cancelled or self.status != "downloading":
-            return
-        
-        #print(f"🛑 İptal başlatılıyor: {self.video_info.title}")
-        
-        
-        self._is_cancelled = True
-        
-        # 2. Status güncelle
-        self.status = "cancelling"
-        self.video_title.value = f"⏸ ({self.resolutions}p) {self.video_info.short_title}"
-        self.video_title.color = "#F59E0B"
-        self.download_speed.value = "Cancelling..."
-        self.update()
-        
-        # 3. Downloader'ı iptal et
+        # 4. Downloader'ı iptal et (lock dışında, çünkü await var)
         try:
             await self.downloader.cancel(self.video_id)
+            print(f"✅ Downloader.cancel() tamamlandı: {self.video_info.title}")
         except Exception as ex:
-            print(f"Cancel error: {ex}")
+            print(f"❌ Cancel error: {ex}")
         
-        # 4. Callback'lerin tamamen durması için bekle
-        await asyncio.sleep(0.5)
+        # 5. Callback'lerin durması için extra bekleme
+        await asyncio.sleep(0.8)
         
-        # 5. Final UI güncellemesi
-        self.status = "cancelled"
-        self.video_title.value = f"✗ ({self.resolutions}p) {self.video_info.short_title}"
-        self.video_title.color = "#F59E0B"
-        self.download_speed.value = "Cancelled"
-        self.left_time.value = ""
+        # 6. Final UI güncellemesi
+        async with self._cancel_lock:
+            self.status = "cancelled"
+            self.video_title.value = f"✗ ({self.resolutions}p) {self.video_info.short_title}"
+            self.video_title.color = "#F59E0B"
+            self.download_speed.value = "Cancelled"
+            self.left_time.value = ""
+            
+            # Button state
+            self.button_cancel.visible = False
+            self.button_cancel.disabled = False
+            self.button.visible = True
+            self.button.icon = ft.Icons.REFRESH
+            self.button_rm.visible = True
+            
+            self.update()
         
-        # Button state
-        self.button_cancel.visible = False
-        self.button.visible = True
-        self.button.icon = ft.Icons.REFRESH
-        self.button_rm.visible = True
-        
-        self.update()
-        print(f"✅ İptal tamamlandı: {self.video_info.title}")
+        print(f"✅ İptal UI güncellemesi tamamlandı: {self.video_info.title}")
 
     async def remove_from_queue(self, e):
+        """✅ Queue'dan kaldırma"""
+        print(f"🗑️ Queue'dan kaldırılıyor: {self.video_info.title}")
+        
+        async with self._cancel_lock:
+            if self.status == "downloading":
+                self._is_cancelled = True
+        
+        # Downloading ise önce iptal et
         if self.status == "downloading":
-            self._is_cancelled = True
             try:
                 await self.downloader.cancel(self.video_id)
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
             except Exception as ex:
                 print(f"Remove cancel error: {ex}")
         
         await self.queue_ref.remove_task(self.video_id)
+        print(f"✅ Queue'dan kaldırıldı: {self.video_info.title}")
 
     def progress_callback(self, data):
+        """✅ Progress callback - iptal kontrolü eklenmiş"""
         try:
-            if self._is_cancelled or self.status not in ["downloading", "cancelling"]:
+            # ✅ İptal edildiyse callback'i atla
+            if self._is_cancelled or self.status not in ["downloading"]:
                 return
             
             percentage = data.get('percentage', 0)

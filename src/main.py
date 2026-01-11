@@ -151,4 +151,4 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.app(main,assets_dir="src/assets",name="Youtube Downlaoder")
+    ft.app(target=main,assets_dir="src/assets",name="Youtube Downlaoder")

@@ -4,6 +4,8 @@ import psutil
 import os
 from concurrent.futures import ThreadPoolExecutor
 import glob
+import signal
+import sys
 
 
 class DynamicSemaphore:
@@ -17,25 +19,20 @@ class DynamicSemaphore:
     async def acquire(self):
         """Semaphore'u kilitle"""
         async with self._lock:
-            # Eğer slot varsa hemen al
             if self._value > 0:
                 self._value -= 1
                 return
             
-            # Slot yoksa bekle
             fut = asyncio.get_event_loop().create_future()
             self._waiters.append(fut)
         
-        # Lock dışında bekle
         try:
             await fut
         except asyncio.CancelledError:
             async with self._lock:
-                # İptal edilirse slot'u geri ver
                 if not fut.done():
                     self._waiters.remove(fut)
                 else:
-                    # Future zaten tamamlanmışsa, slot'u geri ver
                     self._value += 1
             raise
     
@@ -44,7 +41,6 @@ class DynamicSemaphore:
         async def _release():
             async with self._lock:
                 self._value += 1
-                # Bekleyen varsa uyandır
                 while self._waiters and self._value > 0:
                     fut = self._waiters.pop(0)
                     if not fut.done():
@@ -60,7 +56,6 @@ class DynamicSemaphore:
             old_value = self._value
             self._value = new_value
             
-            # Eğer limit artırıldıysa, bekleyen task'ları uyandır
             if new_value > old_value:
                 wake_count = new_value - old_value
                 for _ in range(wake_count):
@@ -97,11 +92,14 @@ class RobustDownloader:
         self.latest_progress = {}
         self.active_downloads = 0
         self._stats_lock = asyncio.Lock()
+        
+        # ✅ YENİ: Her video için ayrı cancel event
+        self.cancel_events = {}
 
     def progress_hook(self, d, video_id):
-        # yt-dlp içinden iptal kontrolü
-        if self.is_cancelled.get(video_id):
-            raise Exception("STOP_NOW")
+        # ✅ Daha güvenli cancel kontrolü
+        if self.is_cancelled.get(video_id, False):
+            raise Exception("DOWNLOAD_CANCELLED_BY_USER")
         
         if d['status'] == 'downloading':
             try:
@@ -126,15 +124,26 @@ class RobustDownloader:
             opts_with_hook = opts.copy()
             opts_with_hook['progress_hooks'] = [lambda d: self.progress_hook(d, video_id)]
             
+            # ✅ Process'i kaydet
+            current_process = psutil.Process(os.getpid())
+            self.processes[video_id] = current_process
+            
             with yt_dlp.YoutubeDL(opts_with_hook) as ydl:
-                self.processes[video_id] = psutil.Process(os.getpid())
                 ydl.download([url])
+            
             return "Success"
+            
         except Exception as e:
-            if "STOP_NOW" in str(e) or self.is_cancelled.get(video_id):
+            error_msg = str(e)
+            # ✅ İptal durumunu daha iyi algıla
+            if ("DOWNLOAD_CANCELLED_BY_USER" in error_msg or 
+                "STOP_NOW" in error_msg or 
+                self.is_cancelled.get(video_id, False)):
                 return "Cancelled"
-            return f"Error: {str(e)}"
+            return f"Error: {error_msg}"
+            
         finally:
+            # ✅ Process'i temizle
             self.processes.pop(video_id, None)
 
     async def download(self, video_id, url, save_path, resolution="1080", progress_callback=None):
@@ -145,7 +154,9 @@ class RobustDownloader:
             async with self._stats_lock:
                 self.active_downloads += 1
             
+            # ✅ Cancel state'i başlat
             self.is_cancelled[video_id] = False
+            self.cancel_events[video_id] = asyncio.Event()
             self.latest_progress[video_id] = {}
             
             ydl_opts = {
@@ -156,12 +167,27 @@ class RobustDownloader:
             }
             
             loop = asyncio.get_running_loop()
-            monitor_task = asyncio.create_task(self._monitor_progress(video_id, progress_callback)) if progress_callback else None
+            monitor_task = None
+            
+            if progress_callback:
+                monitor_task = asyncio.create_task(
+                    self._monitor_progress(video_id, progress_callback)
+                )
             
             try:
-                result = await loop.run_in_executor(self.executor, self._run_download, url, video_id, ydl_opts)
+                # ✅ Download işlemini başlat
+                result = await loop.run_in_executor(
+                    self.executor, 
+                    self._run_download, 
+                    url, 
+                    video_id, 
+                    ydl_opts
+                )
+                
                 return result
+                
             finally:
+                # ✅ Monitor'u durdur
                 if monitor_task:
                     monitor_task.cancel()
                     try:
@@ -169,51 +195,97 @@ class RobustDownloader:
                     except asyncio.CancelledError:
                         pass
                 
+                # ✅ Cleanup
                 self.is_cancelled.pop(video_id, None)
+                self.cancel_events.pop(video_id, None)
+                self.latest_progress.pop(video_id, None)
+                
         finally:
             async with self._stats_lock:
                 self.active_downloads -= 1
             
-            # Semaphore'u serbest bırak
             self.semaphore.release()
 
     async def _monitor_progress(self, video_id, callback):
+        """Progress monitoring loop"""
         try:
             while True:
                 await asyncio.sleep(0.4)
+                
+                # ✅ İptal edildiyse dur
+                if self.is_cancelled.get(video_id, False):
+                    break
+                
                 if video_id in self.latest_progress:
                     data = self.latest_progress[video_id]
-                    if data: 
-                        callback(data)
+                    if data:
+                        try:
+                            callback(data)
+                        except:
+                            pass
+                            
         except asyncio.CancelledError:
             pass
 
     async def cancel(self, video_id):
-        """Hiyerarşik (ffmpeg dahil) ve asenkron iptal"""
-        self.is_cancelled[video_id] = True
-        process = self.processes.get(video_id)
+        """✅ Geliştirilmiş iptal mekanizması"""
+        print(f"🛑 Downloader.cancel() çağrıldı: {video_id}")
         
+        # 1. Flag'i set et (progress_hook için)
+        self.is_cancelled[video_id] = True
+        
+        # 2. Event'i set et
+        if video_id in self.cancel_events:
+            self.cancel_events[video_id].set()
+        
+        # 3. Process'i öldür
+        process = self.processes.get(video_id)
         if process:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._force_kill_recursive, process)
             self.processes.pop(video_id, None)
         
-        await asyncio.sleep(0.3)
-        #self._cleanup_temp_files()
+        # ✅ Daha uzun bekleme süresi - process'in tamamen ölmesi için
+        await asyncio.sleep(1.0)
+        
+        print(f"✅ Downloader.cancel() tamamlandı: {video_id}")
 
     def _force_kill_recursive(self, process):
-        """ffmpeg ve tüm alt süreçleri kesin olarak öldürür"""
+        """✅ Geliştirilmiş process kill - Windows/Linux uyumlu"""
         try:
-            children = process.children(recursive=True)
-            for child in children:
-                try:
-                    child.kill()
-                except:
-                    pass
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+            # Önce child process'leri öldür
+            try:
+                children = process.children(recursive=True)
+                for child in children:
+                    try:
+                        if sys.platform == 'win32':
+                            # Windows için
+                            child.send_signal(signal.CTRL_BREAK_EVENT)
+                            child.terminate()
+                        else:
+                            # Linux/Mac için
+                            child.terminate()
+                        
+                        # 1 saniye bekle
+                        child.wait(timeout=1)
+                    except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                        # Hala çalışıyorsa kill et
+                        try:
+                            child.kill()
+                        except:
+                            pass
+                    except:
+                        pass
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            
+            print(f"🔪 Process killed: {process.pid}")
+            
+        except Exception as e:
+            print(f"❌ Kill error: {e}")
 
     def _cleanup_temp_files(self):
+        """Geçici dosyaları temizle"""
         patterns = ['*.part', '*.ytdl', '*.temp', '*.f*-*.m4a', '*.f*-*.mp4']
         for p in patterns:
             for f in glob.glob(p):
@@ -225,21 +297,12 @@ class RobustDownloader:
     # ============== DİNAMİK YÖNETİM FONKSİYONLARI ==============
     
     async def set_max_concurrent(self, new_limit):
-        """
-        Maksimum eşzamanlı indirme sayısını dinamik olarak değiştirir.
-        
-        Önemli: Limit azaltılırsa, devam eden indirmeler tamamlanır
-        ama yenileri bekletilir. Artırılırsa bekleyenler hemen başlatılır.
-        """
+        """Maksimum eşzamanlı indirme sayısını dinamik olarak değiştirir"""
         async with self._stats_lock:
             old_limit = self.max_concurrent
             self.max_concurrent = new_limit
             
-            # Semaphore değerini güncelle
             current_available = await self.semaphore.get_value()
-            
-            # Yeni available slot sayısını hesapla
-            # available = new_limit - active_downloads
             new_available = max(0, new_limit - self.active_downloads)
             
             await self.semaphore.set_value(new_available)
